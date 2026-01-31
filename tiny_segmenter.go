@@ -1,6 +1,7 @@
 package nihongo
 
-// is a segmenter implementation from JavaScript tiny segmenter.
+// JavaScript の TinySegmenter を Go に移植した分かち書き実装。
+// 形態素解析器ではなく、文字種と重み付き特徴量で境界を推定する。
 
 // License/Copyrights of original TinySegmenter
 // TinySegmenter 0.1 -- Super compact Japanese tokenizer in Javascript
@@ -14,8 +15,11 @@ import (
 	"unicode/utf8"
 )
 
+// 互換のために残っているが現状未使用のパターン表。
 var patterns = map[string]string{}
 
+// compile は正規表現のコンパイルを行い、失敗時は panic で即座に落とす。
+// TinySegmenter の初期化で失敗するのは致命的なため、エラーを握りつぶさない。
 func compile(text string) *regexp.Regexp {
 	pattern, err := regexp.Compile(text)
 	if err != nil {
@@ -24,6 +28,8 @@ func compile(text string) *regexp.Regexp {
 	return pattern
 }
 
+// charTypes は文字の大まかな種別（漢字・ひらがな等）を決めるための正規表現群。
+// TinySegmenter の特徴量で使う「文字種」ラベルをここで判定する。
 var charTypes = map[string]*regexp.Regexp{
 	"M": compile("[一二三四五六七八九十百千万億兆]"),
 	"I": compile("[ぁ-ん]"),
@@ -33,6 +39,8 @@ var charTypes = map[string]*regexp.Regexp{
 	"H": compile("[一-龠々〆ヵヶ]"),
 }
 
+// 以降の多数の係数表は TinySegmenter の学習済み重み。
+// 文字列や文字種の n-gram ごとのスコアが入っており、境界判定に使われる。
 var bias = -332
 var bc1 = map[string]int{"HH": 6, "II": 2461, "KH": 406, "OH": -1378}
 var bc2 = map[string]int{"AA": -3267, "AI": 2744, "AN": -878, "HH": -4070, "HM": -1711, "HN": 4012, "HO": 3761, "IA": 1327, "IH": -1184, "II": -1332, "IK": 1721, "IO": 5492, "KI": 3831, "KK": -8741, "MH": -3132, "MK": 3334, "OO": -2920}
@@ -77,11 +85,14 @@ var uw4 = map[string]int{",": 3930, ".": 3508, "―": -4841, "、": 3930, "。":
 var uw5 = map[string]int{",": 465, ".": -299, "1": -514, "E2": -32768, "]": -2762, "、": 465, "。": -299, "「": 363, "あ": 1655, "い": 331, "う": -503, "え": 1199, "お": 527, "か": 647, "が": -421, "き": 1624, "ぎ": 1971, "く": 312, "げ": -983, "さ": -1537, "し": -1371, "す": -852, "だ": -1186, "ち": 1093, "っ": 52, "つ": 921, "て": -18, "で": -850, "と": -127, "ど": 1682, "な": -787, "に": -1224, "の": -635, "は": -578, "べ": 1001, "み": 502, "め": 865, "ゃ": 3350, "ょ": 854, "り": -208, "る": 429, "れ": 504, "わ": 419, "を": -1264, "ん": 327, "イ": 241, "ル": 451, "ン": -343, "中": -871, "京": 722, "会": -1153, "党": -654, "務": 3519, "区": -901, "告": 848, "員": 2104, "大": -1296, "学": -548, "定": 1785, "嵐": -1304, "市": -2991, "席": 921, "年": 1763, "思": 872, "所": -814, "挙": 1618, "新": -1682, "日": 218, "月": -4353, "査": 932, "格": 1356, "機": -1508, "氏": -1347, "田": 240, "町": -3912, "的": -3149, "相": 1319, "省": -1052, "県": -4003, "研": -997, "社": -278, "空": -813, "統": 1955, "者": -2233, "表": 663, "語": -1073, "議": 1219, "選": -1018, "郎": -368, "長": 786, "間": 1191, "題": 2368, "館": -689, "１": -514, "Ｅ２": -32768, "｢": 363, "ｲ": 241, "ﾙ": 451, "ﾝ": -343}
 var uw6 = map[string]int{",": 227, ".": 808, "1": -270, "E1": 306, "、": 227, "。": 808, "あ": -307, "う": 189, "か": 241, "が": -73, "く": -121, "こ": -200, "じ": 1782, "す": 383, "た": -428, "っ": 573, "て": -1014, "で": 101, "と": -105, "な": -253, "に": -149, "の": -417, "は": -236, "も": -206, "り": 187, "る": -135, "を": 195, "ル": -673, "ン": -496, "一": -277, "中": 201, "件": -800, "会": 624, "前": 302, "区": 1792, "員": -1212, "委": 798, "学": -960, "市": 887, "広": -695, "後": 535, "業": -697, "相": 753, "社": -507, "福": 974, "空": -822, "者": 1811, "連": 463, "郎": 1082, "１": -270, "Ｅ１": 306, "ﾙ": -673, "ﾝ": -496}
 
+// getCType は文字列（1 文字を想定）の文字種ラベルを返す。
+// Unicode の範囲に一致する最初の種別を返し、該当なしは "O"（その他）にする。
 func getCType(str string) string {
 	buff := make([]byte, 4)
 	for _, r := range str {
 		rlen := utf8.EncodeRune(buff, r)
 		for t, pattern := range charTypes {
+			// 正規表現に一致した最初の文字種を採用する。
 			if pattern.Match(buff[:rlen]) {
 				return t
 			}
@@ -90,25 +101,31 @@ func getCType(str string) string {
 	return "O"
 }
 
-// Tokenize splits sentence to word array in Japanese
+// Tokenize は日本語文を TinySegmenter の重みで分割し、単語列を返す。
+// アルゴリズムは「境界ならプラス、非境界ならマイナス」を合算したスコアで判断する。
 func Tokenize(input string) []string {
 	if input == "" {
 		return []string{}
 	}
+	// 結果の単語配列。初期容量を与えて再割当てを抑える。
 	result := make([]string, 0, 16)
+	// 文字列を 1 文字ごとに分割し、前後のコンテキストを参照できるようにバッファ化する。
 	seg := make([]string, 0, utf8.RuneCountInString(input)+6)
 	ctype := make([]string, 0, utf8.RuneCountInString(input)+6)
 	o := strings.Split(input, "")
+	// 先頭側のダミー記号（B1〜B3）を入れて境界判定の参照を安定させる。
 	seg = append(seg, "B3")
 	seg = append(seg, "B2")
 	seg = append(seg, "B1")
 	ctype = append(ctype, "O")
 	ctype = append(ctype, "O")
 	ctype = append(ctype, "O")
+	// 文字種ラベルを並列に保持する。
 	for _, c := range o {
 		seg = append(seg, c)
 		ctype = append(ctype, getCType(c))
 	}
+	// 末尾側のダミー記号（E1〜E3）を追加。
 	seg = append(seg, "E1")
 	seg = append(seg, "E2")
 	seg = append(seg, "E3")
@@ -116,13 +133,17 @@ func Tokenize(input string) []string {
 	ctype = append(ctype, "O")
 	ctype = append(ctype, "O")
 
+	// 現在構築中の単語。
 	word := seg[3]
+	// 直近 3 つの境界判定（B: 境界あり, O: 境界なし）を保持する。
 	p1 := "U"
 	p2 := "U"
 	p3 := "U"
 
 	for i := 4; i < len(seg)-3; i++ {
+		// ここで境界スコアを合算し、正なら境界（単語区切り）と判定する。
 		score := bias
+		// 周辺 6 文字と 6 文字種のコンテキストを取得する。
 		w1 := seg[i-3]
 		w2 := seg[i-2]
 		w3 := seg[i-1]
@@ -135,17 +156,20 @@ func Tokenize(input string) []string {
 		c4 := ctype[i]
 		c5 := ctype[i+1]
 		c6 := ctype[i+2]
+		// 直前の境界状態（p1〜p3）による重み。
 		score += up1[p1]
 		score += up2[p2]
 		score += up3[p3]
 		score += bp1[p1+p2]
 		score += bp2[p2+p3]
+		// 1 文字特徴（位置別）。
 		score += uw1[w1]
 		score += uw2[w2]
 		score += uw3[w3]
 		score += uw4[w4]
 		score += uw5[w5]
 		score += uw6[w6]
+		// 2 文字 / 3 文字の文字列特徴。
 		score += bw1[w2+w3]
 		score += bw2[w3+w4]
 		score += bw3[w4+w5]
@@ -153,12 +177,14 @@ func Tokenize(input string) []string {
 		score += tw2[w2+w3+w4]
 		score += tw3[w3+w4+w5]
 		score += tw4[w4+w5+w6]
+		// 文字種の 1 文字特徴。
 		score += uc1[c1]
 		score += uc2[c2]
 		score += uc3[c3]
 		score += uc4[c4]
 		score += uc5[c5]
 		score += uc6[c6]
+		// 文字種の 2 文字 / 3 文字特徴。
 		score += bc1[c2+c3]
 		score += bc2[c3+c4]
 		score += bc3[c4+c5]
@@ -167,6 +193,7 @@ func Tokenize(input string) []string {
 		score += tc3[c3+c4+c5]
 		score += tc4[c4+c5+c6]
 		//  score += TC5[c4 + c5 + c6]);
+		// 境界履歴と文字種の組み合わせ特徴。
 		score += uq1[p1+c1]
 		score += uq2[p2+c2]
 		score += uq3[p3+c3]
@@ -178,17 +205,20 @@ func Tokenize(input string) []string {
 		score += tq2[p2+c2+c3+c4]
 		score += tq3[p3+c1+c2+c3]
 		score += tq4[p3+c2+c3+c4]
+		// スコアが正なら境界とみなして単語を確定。
 		p := "O"
 		if score > 0 {
 			result = append(result, word)
 			word = ""
 			p = "B"
 		}
+		// 履歴を更新して次の判定へ。
 		p1 = p2
 		p2 = p3
 		p3 = p
 		word += seg[i]
 	}
+	// 末尾の単語を追加。
 	result = append(result, word)
 
 	return result
